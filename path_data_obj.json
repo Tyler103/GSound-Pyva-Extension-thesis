@@ -1,0 +1,33 @@
+{
+    "source_indices": [
+        3351922
+    ],
+    "path_types": [
+        3351922
+    ],
+    "distances": [
+        3351922
+    ],
+    "listener_directions": [
+        3351922,
+        3
+    ],
+    "source_directions": [
+        3351922,
+        3
+    ],
+    "relative_speeds": [
+        3351922
+    ],
+    "speeds_of_sound": [
+        3351922
+    ],
+    "intensities": [
+        3351922,
+        8
+    ],
+    "num_paths": 3351922,
+    "num_bands": 8,
+    "total_energy": 0.28677812218666077,
+    "kept_energy_percentage": 100.0
+}
