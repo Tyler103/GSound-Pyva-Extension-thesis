@@ -109,14 +109,14 @@ print("\nRunning RayDataPipeline...")
 
 listener_grid = [
     (2.0, 2.0, 0.5),
-    (2.0, 4.0, 0.5),
-    (2.0, 6.0, 0.5),
-    (4.5, 2.0, 0.5),
-    (4.5, 4.0, 0.5),
-    (4.5, 6.0, 0.5),
-    (7.0, 2.0, 0.5),
-    (7.0, 4.0, 0.5),
-    (7.0, 6.0, 0.5),
+    (2.0, 5.0, 0.5),
+    (2.0, 8.0, 0.5),
+    (5.5, 2.0, 0.5),
+    (5.5, 5.0, 0.5),# mid point for Auralizer
+    (5.5, 8.0, 0.5),
+    (8.5, 2.0, 0.5),
+    (8.5, 5.0, 0.5),
+    (8.5, 8.0, 0.5),
 ]
 
 
@@ -145,7 +145,7 @@ print("\nLoading dataset...")
 df_full = pd.read_parquet(parquet_path)
 
 # filter to single central listener for Room 1 IR
-df_single = df_full[(df_full['listener_x'] == 4.5) & (df_full['listener_y'] == 4.0)].copy()
+df_single = df_full[(df_full['listener_x'] == 5.5) & (df_full['listener_y'] == 5.0)].copy()
 
 single_listener_path = parquet_path.replace('.parquet', '_single.parquet')
 df_single.to_parquet(single_listener_path)
@@ -420,8 +420,8 @@ scatter = ax2.scatter(
 )
 
 plt.colorbar(scatter, ax=ax2, label='Total Energy (all 8 bands)')
-ax2.scatter([src_x], [src_y], c='red', s=300, marker='*', zorder=5, label='Gunshot')
-ax2.scatter([5.0], [3.0], c='blue', s=150, marker='^', zorder=5, label='Mic Room 1')
+ax2.scatter([src_x], [src_y], c='red', s=300, marker='*', zorder=5, label='Source')
+#ax2.scatter([5.0], [3.0], c='blue', s=150, marker='^', zorder=5, label='Mic Room 1')
 ax2.scatter(impact_x, impact_y, c='orange', s=60, marker='o',
             alpha=0.8, label='Virtual sources (Room 2)')
 ax2.set_xlabel('X (m)'); ax2.set_ylabel('Y (m)')
@@ -432,6 +432,44 @@ fig2.tight_layout()
 fig2.savefig(f'{figures_dir}/02_floor_ray_distribution_topdown.png', dpi=150, bbox_inches='tight')
 plt.close(fig2)
 print("Saved 02_floor_ray_distribution_topdown.png")
+
+# listener positions
+fig, ax = plt.subplots(figsize=(7, 7))
+
+room_rect = patches.Rectangle((0, 0), floor_width, floor_depth,
+                                linewidth=2, edgecolor='black', facecolor='lightyellow')
+ax.add_patch(room_rect)
+
+listener_xs = [pos[0] for pos in listener_grid]
+listener_ys = [pos[1] for pos in listener_grid]
+
+ax.scatter(listener_xs, listener_ys,
+           c='steelblue', s=150, marker='^', zorder=5, label='Listener grid')
+
+for pos in listener_grid:
+    ax.annotate(f'({pos[0]}, {pos[1]})',
+                xy=(pos[0], pos[1]),
+                xytext=(6, 6), textcoords='offset points',
+                fontsize=8, color='steelblue')
+
+ax.scatter([1.0], [1.0], c='red', s=300, marker='*', zorder=5, label='Gunshot source')
+ax.annotate('Source (1.0, 1.0)', xy=(1.0, 1.0),
+            xytext=(6, 6), textcoords='offset points', fontsize=8, color='red')
+
+ax.set_xlabel('X (m)', fontsize=11)
+ax.set_ylabel('Y (m)', fontsize=11)
+ax.set_title('Room 1 — Source and Listener Grid Positions', fontsize=12)
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+ax.set_aspect('equal')
+ax.set_xlim(-0.5, floor_width + 0.5)
+ax.set_ylim(-0.5, floor_depth + 0.5)
+
+plt.tight_layout()
+plt.savefig(f'{figures_dir}/00_listener_grid.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved 00_listener_grid.png")
+
 
 # ── Figure 3: Floor ray energy histogram ────────────────
 fig3, (ax3a, ax3b) = plt.subplots(1, 2, figsize=(14, 5))
