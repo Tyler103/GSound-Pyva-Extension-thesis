@@ -36,63 +36,102 @@ import pyva.systems.acoustic3Dsystems as ac3
 import pyva.systems.structure2Dsystems as st2
 import pyva.coupling.junctions as jun
 
-def get_TL_diffuse(frequencies, material='drywall', thickness=0.012):
+def get_TL_diffuse(frequencies, thickness, material='drywall'):
     """
     Diffuse field transmission loss — integrates angular transmission
     coefficient across all angles of incidence (0 to 90 degrees).
     More physically accurate than normal incidence for reverberant rooms.
     Captures coincidence effect at critical frequency.
     """
+
+    # Convert frequencies to angular frequency needed for physics
     omega  = 2 * np.pi * np.array(frequencies, dtype=float)
+
+    # Instantiates a pyva Fluid object with default air properties
     air    = matC.Fluid()
+
+    # Material property blocks
+
+    # E: Young's modulus — stiffness, resistance to deformation
+    # rh0: Density
+    # nu: Poisson's ratio — how much it expands laterally when compressed
+    # eta: Loss factor — internal damping, fraction of energy dissipated per cycle (dimensionless)
 
     if material == 'concrete':
         mat       = matC.IsoMat(E=3.8e10, rho0=2300, nu=0.2, eta=0.02)
-        thickness = 0.2
     elif material == 'drywall':
         mat       = matC.IsoMat(E=2.5e9, rho0=800, nu=0.3, eta=0.01)
-        thickness = 0.012
     elif material == 'timber':
         mat       = matC.IsoMat(E=1.1e10, rho0=500, nu=0.3, eta=0.03)
-        thickness = 0.05
-
+    else:
+        raise ValueError(f"Unknown material: {material}. Choose 'concrete', 'drywall', or 'timber'.")
+    
+    # Build the plate object
     plate_prop  = sProp.PlateProp(thickness, mat)
+
+    # Build angle array of 0 to 89.1 degrees
     thetas      = np.linspace(0, np.pi/2 * 0.99, 90)
+    # output array initalize
     tau_diffuse = np.zeros(len(omega))
 
+    # loop over each frequency
+    # Compute transmission coefficient at every angle
     for i, w in enumerate(omega):
         taus = np.array([
             plate_prop.transmission_coefficient_angular(w, theta=t, fluid1=air)
             for t in thetas
         ])
-        tau_diffuse[i] = 2 * np.trapz(taus * np.sin(thetas) * np.cos(thetas), thetas)
+        # Perform the diffuse field integral
+        tau_diffuse[i] = 2 * np.trapezoid(taus * np.sin(thetas) * np.cos(thetas), thetas)
 
+    #Convert tau to decibels
     TL_db = -10 * np.log10(tau_diffuse + 1e-10)
+
+    # TL in dB, raw τ values 
     return TL_db, tau_diffuse
 
 frequencies = np.array([125, 250, 500, 1000, 2000, 4000, 8000, 16000], dtype=float)
 
-TL_db, tau = get_TL_diffuse(frequencies, material='concrete', thickness=0.012)
+material_chosen = 'drywall'
+thickniss = 0.012
+TL_db, tau = get_TL_diffuse(frequencies, thickness=thickniss, material= material_chosen)
 
-print("Diffuse field TL (concrete):")
+# prints the transmission loss over 8 frequency bands
+print(f"Diffuse field TL ({material_chosen}):")
 for f, tl, t in zip(frequencies, TL_db, tau):
     print(f"  {f:6.0f} Hz: TL={tl:.1f}dB  tau={t:.6f}  ({t*100:.4f}% survives)")
+
 
 # ─────────────────────────────────────
 # STEP 2: Generate Parquet via pipeline
 # ─────────────────────────────────────
 print("\nRunning RayDataPipeline...")
 
+listener_grid = [
+    (2.0, 2.0, 0.5),
+    (2.0, 4.0, 0.5),
+    (2.0, 6.0, 0.5),
+    (4.5, 2.0, 0.5),
+    (4.5, 4.0, 0.5),
+    (4.5, 6.0, 0.5),
+    (7.0, 2.0, 0.5),
+    (7.0, 4.0, 0.5),
+    (7.0, 6.0, 0.5),
+]
+
+
+# initialize ray creation pipeline
 pipeline = RayDataPipeline(
     diffuse_count=5000,
     specular_count=1000,
     energy_percentage=95.0,
 )
 
+# simulates ray generation and saves to parquet
 parquet_path = pipeline.process_coordinates(
     mesh_path='/app/ray_generator/examples/cube.obj',
     source_positions=[(1.0, 1.0, 0.5)],
-    listener_positions=[(5.0, 3.0, 0.5)],
+    listener_positions=listener_grid,
     output_path='/app/ray_generator/examples/output'
 )
 
@@ -103,12 +142,22 @@ print(f"Parquet saved: {parquet_path}")
 # ─────────────────────────────────────
 print("\nLoading dataset...")
 
+df_full = pd.read_parquet(parquet_path)
+
+# filter to single central listener for Room 1 IR
+df_single = df_full[(df_full['listener_x'] == 4.5) & (df_full['listener_y'] == 4.0)].copy()
+
+single_listener_path = parquet_path.replace('.parquet', '_single.parquet')
+df_single.to_parquet(single_listener_path)
+
 data = create_dataset(
-    ray=parquet_path,
+    ray=single_listener_path,
     room='/app/ray_generator/examples/cube.obj'
 )
 
+# list of samples, one per source-listener pair
 demo = data[0]
+
 print(f"Source:      {demo['tx']}")
 print(f"Listener:    {demo['rx']}")
 print(f"Intensities: {demo['Intensities'].shape}")
@@ -121,11 +170,17 @@ print(f"Room volume: {demo['V']:.2f} m3")
 # ─────────────────────────────────────
 print("\nGenerating Room 1 IR...")
 
+# Instantiates the Ambisonic IR generator
 auralizer = Ambisonic_IR_Generator(
     fs=sample_rate,
     order=1,
     imp_res_time=3.0
 )
+
+# output is 4 Ambisonic channels × IR length in samples
+# 1. places each ray in time
+# 2. encodes each ray spatially
+# 3. Scales by per-band intensity
 
 sir_room1 = auralizer.forward_ambsonics(demo)
 print(f"Room 1 IR shape: {sir_room1.shape}")
@@ -135,42 +190,57 @@ print(f"Room 1 IR shape: {sir_room1.shape}")
 # ─────────────────────────────────────
 print("\nFinding floor hitting rays...")
 
-df = pd.read_parquet(parquet_path)
+# loads the parquet file in
+df = df_full.copy()
+# compute propagation delay for every ray in ms
 df['time'] = df['distance'] / df['speed_of_sound']
 
-floor_rays = df[df['source_direction_z'] < -0.5].copy()
+band_cols = [f'intensity_band_{b}' for b in range(8)]
+df['total_energy'] = df[band_cols].sum(axis=1)
+
+# rays headed down
+floor_rays = df[df['listener_direction_z'] < -0.5].copy()
+
 print(f"Floor rays: {len(floor_rays)} / {len(df)}")
 print(f"Floor energy: {floor_rays['intensity_band_0'].sum()/df['intensity_band_0'].sum()*100:.1f}%")
 
 # ─────────────────────────────────────
-# STEP 6: Run Room 2 via RayDataPipeline
-# Virtual sources = top 50 floor ray impact points
+# STEP 6: Compute impact points per listener group
 # ─────────────────────────────────────
 print("\nRunning Room 2 via RayDataPipeline...")
 
-
-band_cols = [f'intensity_band_{b}' for b in range(8)]
-floor_rays['total_energy'] = floor_rays[band_cols].sum(axis=1)
-
-# Normalize both so neither dominates the score
 floor_rays['dist_norm']   = floor_rays['distance'] / floor_rays['distance'].max()
 floor_rays['energy_norm'] = floor_rays['total_energy'] / floor_rays['total_energy'].max()
+floor_rays['score']       = floor_rays['energy_norm'] / (floor_rays['dist_norm'] + 1e-10)
 
-# High energy + short distance = low order reflection proxy
-floor_rays['score'] = floor_rays['energy_norm'] / (floor_rays['dist_norm'] + 1e-10)
+rays_per_listener = 6
+all_impact_x      = []
+all_impact_y      = []
+all_impact_energy = []
 
-top_floor = floor_rays.nlargest(50, 'score').reset_index(drop=True)
+for (lx, ly), group in floor_rays.groupby(['listener_x', 'listener_y']):
+    top = group.nlargest(rays_per_listener, 'score').reset_index(drop=True)
+    t   = top['listener_z'].values / (-top['listener_direction_z'].values)
+    ix  = top['listener_x'].values + top['listener_direction_x'].values * t
+    iy  = top['listener_y'].values + top['listener_direction_y'].values * t
+    ix  = np.clip(ix, 0.05, floor_width  - 0.05)
+    iy  = np.clip(iy, 0.05, floor_depth  - 0.05)
+    all_impact_x.extend(ix)
+    all_impact_y.extend(iy)
+    all_impact_energy.extend(top['total_energy'].values)
+    print(f"  Listener ({lx}, {ly}): {len(top)} impact points")
 
-# Ray hits floor at: source + direction * t, where t = source_z / -direction_z
-t_floor = top_floor['source_z'].values / (-top_floor['source_direction_z'].values)
-impact_x = top_floor['source_x'].values + top_floor['source_direction_x'].values * t_floor
-impact_y = top_floor['source_y'].values + top_floor['source_direction_y'].values * t_floor
+impact_x      = np.array(all_impact_x)
+impact_y      = np.array(all_impact_y)
+impact_energy = np.array(all_impact_energy)
 
+print(f"\nTotal virtual sources: {len(impact_x)}")
+print(f"X range: {impact_x.min():.2f} to {impact_x.max():.2f}")
+print(f"Y range: {impact_y.min():.2f} to {impact_y.max():.2f}")
 
-vsrc_positions = [
-    (float(impact_x[i]), float(impact_y[i]), 0.1)
-    for i in range(len(top_floor))
-]
+vsrc_positions = []
+for i in range(len(impact_x)):
+    vsrc_positions.append((float(impact_x[i]), float(impact_y[i]), 0.1))
 
 # Sanity check
 print("Sample floor impact points:")
@@ -196,10 +266,14 @@ print(f"Room 2 parquet: {parquet_room2}")
 # ─────────────────────────────────────
 data_room2 = create_dataset(ray=parquet_room2, room='/app/ray_generator/examples/cube.obj')
 
-# Aggregate all 50 source->listener path sets into one demo dict
+
 all_intensities = np.concatenate([d['Intensities'] for d in data_room2], axis=1)
 all_doa         = np.concatenate([d['doa']         for d in data_room2], axis=1)
 all_delays      = np.concatenate([d['delay']       for d in data_room2])
+
+active_sources = sum(1 for d in data_room2 if len(d['delay']) > 0)
+all_intensities = all_intensities / active_sources
+print(f"Active sources: {active_sources} / {len(vsrc_positions)}")
 
 # Apply pyva TL per band
 for b in range(8):
@@ -278,9 +352,8 @@ print(f"Room 2 total rays:  {len(all_delays):,}")
 print(f"Room 1 IR shape:    {sir_room1.shape}")
 print(f"Room 2 IR shape:    {sir_room2.shape}")
 print(f"Room 2 vs Room 1:   {np.max(np.abs(room2_recording))/np.max(np.abs(room1_recording))*100:.4f}%")
-print(f"TL material:        pyva drywall 12mm")
 print(f"TL range:           {TL_db[0]:.1f}dB (125Hz) to {TL_db[-1]:.1f}dB (16kHz)")
-print(f"Ray selection:      top 50 by energy/distance score")
+print(f"Ray selection:      top {rays_per_listener} per listener group ({len(listener_grid)} listeners)")
 print("─────────────────────────────────────────────────────")
 
 # ─────────────────────────────────────
@@ -320,7 +393,7 @@ ax1.scatter([5.0], [3.0], [floor_height+1.5],
             c='coral', s=100, marker='^', zorder=5, label='Mic Room 2')
 
 top20 = floor_rays.nlargest(20, 'score')
-ax1.scatter(top20['source_x'].values, top20['source_y'].values, np.zeros(len(top20)),
+ax1.scatter(impact_x[:20], impact_y[:20], np.zeros(20),
             c='orange', s=50, marker='o', alpha=0.7, label='Floor ray exits')
 
 ax1.set_xlabel('X (m)'); ax1.set_ylabel('Y (m)'); ax1.set_zlabel('Z (m)')
@@ -332,19 +405,19 @@ plt.close(fig1)
 print("Saved 01_building_3d_overview.png")
 
 # ── Figure 2: Top-down floor plan ───────────────────────
-fig2, ax2 = plt.subplots(figsize=(8, 8))
+fig2, ax2 = plt.subplots(figsize=(6, 6))
 room_rect = patches.Rectangle((0, 0), floor_width, floor_depth,
                                 linewidth=2, edgecolor='black', facecolor='lightyellow')
 ax2.add_patch(room_rect)
 scatter = ax2.scatter(
-                    floor_rays['source_x'].values, 
-                    floor_rays['source_y'].values,
-                    c=floor_rays['total_energy'].values,
-                    cmap='hot', 
-                    s=20, 
-                    alpha=0.7, 
-                    label='Floor rays'
-                    )
+    impact_x,
+    impact_y,
+    c=impact_energy,
+    cmap='hot',
+    s=20,
+    alpha=0.7,
+    label='Floor rays'
+)
 
 plt.colorbar(scatter, ax=ax2, label='Total Energy (all 8 bands)')
 ax2.scatter([src_x], [src_y], c='red', s=300, marker='*', zorder=5, label='Gunshot')
@@ -366,8 +439,10 @@ fig3, (ax3a, ax3b) = plt.subplots(1, 2, figsize=(14, 5))
 # Left: linear scale
 ax3a.hist(floor_rays['total_energy'].values, bins=50,
           color='steelblue', edgecolor='black', alpha=0.7)
-ax3a.axvline(top_floor['total_energy'].min(), color='orange',
-             linestyle='--', linewidth=2, label='Top 50 threshold')
+
+ax3a.axvline(min(all_impact_energy), color='orange',
+             linestyle='--', linewidth=2, label=f'Top {rays_per_listener} per listener threshold')
+
 ax3a.set_xlabel('Total Ray Energy (all 8 bands)')
 ax3a.set_ylabel('Count')
 ax3a.set_title('Floor Ray Energy — Linear Scale')
@@ -378,8 +453,8 @@ data = floor_rays['total_energy'].values
 data = data[data > 0]
 ax3b.hist(data, bins=np.logspace(np.log10(data.min()), np.log10(data.max()), 50),
           color='steelblue', edgecolor='black', alpha=0.7)
-ax3b.axvline(top_floor['total_energy'].min(), color='orange',
-             linestyle='--', linewidth=2, label='Top 50 threshold')
+ax3b.axvline(min(all_impact_energy), color='orange',
+             linestyle='--', linewidth=2, label=f'Top {rays_per_listener} per listener threshold')
 ax3b.set_xscale('log')
 ax3b.set_xlabel('Total Ray Energy (all 8 bands, log scale)')
 ax3b.set_ylabel('Count')
@@ -397,7 +472,7 @@ fig4, ax4 = plt.subplots(figsize=(8, 5))
 ax4.semilogx(frequencies, TL_db, 'o-', color='purple', linewidth=2, markersize=8)
 ax4.fill_between(frequencies, TL_db, TL_db[-1]*1.1, alpha=0.2, color='purple')
 ax4.set_xlabel('Frequency (Hz)'); ax4.set_ylabel('Transmission Loss (dB)')
-ax4.set_title('pyva Transmission Loss — drywall 12mm')
+ax4.set_title(f'pyva Transmission Loss — {material_chosen} {thickniss*1000:.0f}mm')
 ax4.invert_yaxis(); ax4.grid(True, alpha=0.3); ax4.set_xlim(100, 20000)
 for f, tl in zip(frequencies, TL_db):
     ax4.annotate(f'{tl:.0f}dB', (f, tl), textcoords="offset points",
