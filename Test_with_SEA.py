@@ -63,27 +63,19 @@ def get_TL_diffuse(frequencies, thickness, material='drywall'):
         mat       = matC.IsoMat(E=2.5e9, rho0=800, nu=0.3, eta=0.01)
     elif material == 'timber':
         mat       = matC.IsoMat(E=1.1e10, rho0=500, nu=0.3, eta=0.03)
+    elif material == 'aluminium':
+        mat = matC.IsoMat()
+
     else:
         raise ValueError(f"Unknown material: {material}. Choose 'concrete', 'drywall', or 'timber'.")
     
     # Build the plate object
     plate_prop  = sProp.PlateProp(thickness, mat)
 
-    # Build angle array of 0 to 89.1 degrees
-    thetas      = np.linspace(0, np.pi/2 * 0.99, 90)
-    # output array initalize
+    # theta = angle of incidence
+    # tau = transmission coeefficiet
     tau_diffuse = np.zeros(len(omega))
-
-    # loop over each frequency
-    # Compute transmission coefficient at every angle
-    for i, w in enumerate(omega):
-        taus = np.array([
-            plate_prop.transmission_coefficient_angular(w, theta=t, fluid1=air)
-            for t in thetas
-        ])
-        # Perform the diffuse field integral
-        tau_diffuse[i] = 2 * np.trapezoid(taus * np.sin(thetas) * np.cos(thetas), thetas)
-
+    tau_diffuse = plate_prop.transmission_coefficient_diffuse(omega, fluid1=air)
     #Convert tau to decibels
     TL_db = -10 * np.log10(tau_diffuse + 1e-10)
 
@@ -91,16 +83,20 @@ def get_TL_diffuse(frequencies, thickness, material='drywall'):
     return TL_db, tau_diffuse
 
 frequencies = np.array([125, 250, 500, 1000, 2000, 4000, 8000, 16000], dtype=float)
+# drywall: 0.012
+# concrete: 0.2
+# timber: 0.05
+# alum: 0.006
 
-material_chosen = 'drywall'
-thickniss = 0.012
+material_chosen = 'aluminium'
+thickniss = 0.006
 TL_db, tau = get_TL_diffuse(frequencies, thickness=thickniss, material= material_chosen)
+
 
 # prints the transmission loss over 8 frequency bands
 print(f"Diffuse field TL ({material_chosen}):")
 for f, tl, t in zip(frequencies, TL_db, tau):
     print(f"  {f:6.0f} Hz: TL={tl:.1f}dB  tau={t:.6f}  ({t*100:.4f}% survives)")
-
 
 # ─────────────────────────────────────
 # STEP 2: Generate Parquet via pipeline
@@ -134,6 +130,11 @@ parquet_path = pipeline.process_coordinates(
     listener_positions=listener_grid,
     output_path='/app/ray_generator/examples/output'
 )
+
+df = pd.read_parquet(parquet_path)
+print(f"Number of intensity bands: {df['param_num_bands'].iloc[0]}")
+print(f"Band columns: {[c for c in df.columns if 'intensity_band' in c]}")
+print(f"Frequencies array length: {len(frequencies)}")
 
 print(f"Parquet saved: {parquet_path}")
 
@@ -240,12 +241,12 @@ print(f"Y range: {impact_y.min():.2f} to {impact_y.max():.2f}")
 
 vsrc_positions = []
 for i in range(len(impact_x)):
-    vsrc_positions.append((float(impact_x[i]), float(impact_y[i]), 0.1))
+    vsrc_positions.append((float(impact_x[i]), float(impact_y[i]), floor_height - 0.1))
 
 # Sanity check
 print("Sample floor impact points:")
 for i in range(5):
-    print(f"  ({impact_x[i]:.2f}, {impact_y[i]:.2f}, 0.1)")
+    print(f"  ({impact_x[i]:.2f}, {impact_y[i]:.2f}, {floor_height - 0.1})")
 
 pipeline_room2 = RayDataPipeline(
     diffuse_count=5000,
@@ -256,7 +257,7 @@ pipeline_room2 = RayDataPipeline(
 parquet_room2 = pipeline_room2.process_coordinates(
     mesh_path='/app/ray_generator/examples/cube.obj',
     source_positions=vsrc_positions,
-    listener_positions=[(5.0, 3.0, 1.5)],
+    listener_positions=[(5.0, 3.0, 2.5)],
     output_path='/app/ray_generator/examples/output'
 )
 print(f"Room 2 parquet: {parquet_room2}")
@@ -280,8 +281,8 @@ for b in range(8):
     all_intensities[b] *= tau[b]
 
 demo_room2 = {
-    'tx':          np.array([5.0, 5.0, 0.1]),
-    'rx':          np.array([5.0, 3.0, 1.5]),
+    'tx':          np.array([5.0, 5.0, floor_height - 0.1]),
+    'rx':          np.array([5.0, 3.0, 2.5]),
     'Intensities': all_intensities,
     'doa':         all_doa,
     'delay':       all_delays + wall_delay,
@@ -342,7 +343,6 @@ print("  output_room2_ambi.wav       — Room 2 4-channel Ambisonics")
 
 # ─────────────────────────────────────
 # STEP 11: Summary
-# ─────────────────────────────────────
 print("\n─── Summary ─────────────────────────────────────────")
 print(f"Total rays:         {len(df):,}")
 print(f"Floor rays:         {len(floor_rays):,}")
@@ -351,7 +351,15 @@ print(f"Virtual sources:    {len(vsrc_positions)}")
 print(f"Room 2 total rays:  {len(all_delays):,}")
 print(f"Room 1 IR shape:    {sir_room1.shape}")
 print(f"Room 2 IR shape:    {sir_room2.shape}")
-print(f"Room 2 vs Room 1:   {np.max(np.abs(room2_recording))/np.max(np.abs(room1_recording))*100:.4f}%")
+
+atr = np.max(np.abs(room2_recording)) / np.max(np.abs(room1_recording))
+il  = -20 * np.log10(atr)
+energy_transmission = atr**2 * 100
+
+print(f"Room 2 vs Room 1:   {atr*100:.4f}%  (ATR)")
+print(f"Insertion Loss:     {il:.2f} dB")
+print(f"Energy transmitted: {energy_transmission:.4f}%")
+print(f"{material_chosen} {thickniss*1000:.0f}mm ({thickniss*39.3701:.2f} inches)")
 print(f"TL range:           {TL_db[0]:.1f}dB (125Hz) to {TL_db[-1]:.1f}dB (16kHz)")
 print(f"Ray selection:      top {rays_per_listener} per listener group ({len(listener_grid)} listeners)")
 print("─────────────────────────────────────────────────────")
