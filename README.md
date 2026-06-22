@@ -25,5 +25,5 @@ Simulates gunshot acoustic propagation across two floors using physics-based ray
 ```bash
 python3 Test_with_pyva.py
 ```
-/app/ray_generator/room_simulation_demo.gif
+
 
