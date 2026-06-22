@@ -31,8 +31,11 @@ floor_depth  = 10.0
 floor_height = 3.0
 sample_rate  = 48000
 
-wall_x       = floor_width          # x-coordinate of the shared wall
-room2_width  = 10.0                 # Room 2 extends from x=10 to x=20
+# x-coordinate of the shared wall
+wall_x       = floor_width
+
+# Room 2 width        
+room2_width  = 10.0                 
 wall_delay   = 0.2 / 3500 
 
 
@@ -107,12 +110,13 @@ for f, tl, t in zip(frequencies, TL_db, tau):
 # ─────────────────────────────────────
 print("\nRunning RayDataPipeline...")
 
+# New listner shared wall cordinates
 listener_grid = [
     (9.5, 2.0, 0.5),
     (9.5, 5.0, 0.5),
     (9.5, 8.0, 0.5),
     (9.5, 2.0, 1.5),
-    (9.5, 5.0, 1.5),
+    (9.5, 5.0, 1.5), # midpoint
     (9.5, 8.0, 1.5),
     (9.5, 2.0, 2.5),
     (9.5, 5.0, 2.5),
@@ -228,16 +232,22 @@ all_impact_energy = []
 for (lx, ly, lz), group in wall_rays.groupby(['listener_x', 'listener_y', 'listener_z']):
     top = group.nlargest(rays_per_listener, 'score').reset_index(drop=True)
 
-    # t = how far along the ray direction until it hits x = wall_x
+    # figure out the step size from point till wall
     t  = (wall_x - top['listener_x'].values) / (top['listener_direction_x'].values + 1e-10)
+    
+    # apply step size to y and z cord to find out where they hit the wall
     iy = top['listener_y'].values + top['listener_direction_y'].values * t
     iz = top['listener_z'].values + top['listener_direction_z'].values * t
 
+    # ensures impact points stay within wall with a small offset
     iy = np.clip(iy, 0.05, floor_depth  - 0.05)
     iz = np.clip(iz, 0.05, floor_height - 0.05)
 
+    # add values to list
     all_impact_y.extend(iy)
     all_impact_z.extend(iz)
+
+    # save impact energies
     all_impact_energy.extend(top['total_energy'].values)
     print(f"  Listener ({lx}, {ly}, {lz}): {len(top)} impact points on wall")
 
@@ -245,33 +255,50 @@ impact_y      = np.array(all_impact_y)
 impact_z      = np.array(all_impact_z)
 impact_energy = np.array(all_impact_energy)
 
+#print("_________________________________\n")
+##print(f"impact y array: {impact_y}")
+#print(f"impact z array: {impact_z}")
+#print("_________________________________\n")
+
 print(f"\nTotal virtual sources: {len(impact_y)}")
 print(f"Y range: {impact_y.min():.2f} to {impact_y.max():.2f}")
 print(f"Z range: {impact_z.min():.2f} to {impact_z.max():.2f}")
 
+
 # Virtual sources are just on the other side of the wall in Room 2
 vsrc_positions = [
-    (wall_x + 0.1, float(impact_y[i]), float(impact_z[i]))
+    (0.1, float(impact_y[i]), float(impact_z[i]))
     for i in range(len(impact_y))
 ]
 
-print("Sample wall impact points (virtual sources in Room 2):")
-for i in range(5):
-    print(f"  ({wall_x + 0.1:.2f}, {impact_y[i]:.2f}, {impact_z[i]:.2f})")
+print("____________________________________\n")
 
+# print out all the impact points for verification
+print("Sample wall impact points (virtual sources in Room 2):")
+for i in range(len(impact_y)):
+    print(f"  ({0.1:.2f}, {impact_y[i]:.2f}, {impact_z[i]:.2f})")
+
+print("____________________________________\n")
+
+# listner for room 2 for auralizer
 room2_listener_local = (3.0, 5.0, 1.5)
 
+# new source positions in the other room
+
+# need to verify
 vsrc_positions_local = [
     (0.1, float(impact_y[i]), float(impact_z[i]))
     for i in range(len(impact_y))
 ]
 
+# initialize ray tracing
 pipeline_room2 = RayDataPipeline(
     diffuse_count=5000,
     specular_count=1000,
     energy_percentage=95.0,
 )
 
+# run room 2 ray tracing
 parquet_room2 = pipeline_room2.process_coordinates(
     mesh_path='/app/ray_generator/examples/cube.obj',
     source_positions=vsrc_positions_local,
@@ -294,7 +321,7 @@ active_sources = sum(1 for d in data_room2 if len(d['delay']) > 0)
 all_intensities = all_intensities / active_sources
 print(f"Active sources: {active_sources} / {len(vsrc_positions)}")
 
-# Apply pyva TL per band
+# Apply pyva TL per band on room 2 intensities
 for b in range(8):
     all_intensities[b] *= tau[b]
 
@@ -469,26 +496,54 @@ fig2.savefig(f'{figures_dir}/02_wall_ray_distribution_topdown.png', dpi=150, bbo
 plt.close(fig2)
 print("Saved 02_wall_ray_distribution_topdown.png")
 
-# ── Figure 00: Listener grid ────────────────────────────
-fig0, ax0 = plt.subplots(figsize=(7, 7))
-room_rect = patches.Rectangle((0, 0), floor_width, floor_depth,
-                               linewidth=2, edgecolor='black', facecolor='lightyellow')
-ax0.add_patch(room_rect)
-ax0.axvline(wall_x, color='gray', linewidth=3, linestyle='--', label='Shared wall (x=10)')
-ax0.scatter(listener_xs, listener_ys, c='steelblue', s=150, marker='^', zorder=5, label='Listener grid')
+# ── Figure 00b: 3D Listener grid ────────────────────────
+fig_lg = plt.figure(figsize=(10, 7))
+ax_lg  = fig_lg.add_subplot(111, projection='3d')
+
+draw_room(ax_lg, 0, 0, 0, floor_width, floor_depth, floor_height, 'steelblue')
+
+# Shared wall face
+yy, zz = np.meshgrid([0, floor_depth], [0, floor_height])
+ax_lg.plot_surface(np.full_like(yy, wall_x), yy, zz, alpha=0.2, color='gray')
+
+# Listener grid — coloured by z height
+listener_xs = [pos[0] for pos in listener_grid]
+listener_ys = [pos[1] for pos in listener_grid]
+listener_zs = [pos[2] for pos in listener_grid]
+
+sc = ax_lg.scatter(
+    listener_xs, listener_ys, listener_zs,
+    c=listener_zs, cmap='cool', s=120, marker='^',
+    zorder=5, label='Listener grid', depthshade=True
+)
+plt.colorbar(sc, ax=ax_lg, label='Z height (m)', shrink=0.5)
+
+# Annotate each listener
 for pos in listener_grid:
-    ax0.annotate(f'({pos[0]}, {pos[1]}, {pos[2]})',
-                 xy=(pos[0], pos[1]), xytext=(6, 6),
-                 textcoords='offset points', fontsize=7, color='steelblue')
-ax0.scatter([src_x], [src_y], c='red', s=300, marker='*', zorder=5, label='Gunshot source')
-ax0.set_xlabel('X (m)', fontsize=11); ax0.set_ylabel('Y (m)', fontsize=11)
-ax0.set_title('Room 1 — Source and Listener Grid (wall face)', fontsize=12)
-ax0.legend(fontsize=9); ax0.grid(True, alpha=0.3); ax0.set_aspect('equal')
-ax0.set_xlim(-0.5, floor_width + 0.5); ax0.set_ylim(-0.5, floor_depth + 0.5)
-fig0.tight_layout()
-fig0.savefig(f'{figures_dir}/00_listener_grid.png', dpi=150, bbox_inches='tight')
-plt.close(fig0)
-print("Saved 00_listener_grid.png")
+    ax_lg.text(pos[0]+0.1, pos[1]+0.1, pos[2]+0.1,
+               f'({pos[1]:.0f},{pos[2]:.1f})',
+               fontsize=6, color='steelblue')
+
+# Gunshot source
+ax_lg.scatter([src_x], [src_y], [src_z],
+              c='red', s=250, marker='*', zorder=5, label='Gunshot source')
+
+# Draw lines from each listener to the wall to show projection direction
+for pos in listener_grid:
+    ax_lg.plot([pos[0], wall_x], [pos[1], pos[1]], [pos[2], pos[2]],
+               color='orange', linewidth=0.6, alpha=0.5, linestyle='--')
+
+
+ax_lg.set_xlabel('X (m)'); ax_lg.set_ylabel('Y (m)'); ax_lg.set_zlabel('Z (m)')
+ax_lg.set_title('Room 1 — 3D Listener Grid')
+ax_lg.legend(fontsize=8, loc='upper left')
+ax_lg.set_xlim(0, floor_width)
+ax_lg.set_ylim(0, floor_depth)
+ax_lg.set_zlim(0, floor_height)
+fig_lg.tight_layout()
+fig_lg.savefig(f'{figures_dir}/00b_listener_grid_3d.png', dpi=150, bbox_inches='tight')
+plt.close(fig_lg)
+print("Saved 00b_listener_grid_3d.png")
 
 # ── Figure 3: Wall ray energy histogram ─────────────────
 fig3, (ax3a, ax3b) = plt.subplots(1, 2, figsize=(14, 5))
