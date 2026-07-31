@@ -17,13 +17,12 @@ Simulates gunshot acoustic propagation across two floors using physics-based ray
 5. Convolve both IRs with anechoic gunshot recording
 
 ## Results
-- Floor-hitting rays: 755 / 5,898 (14.2% of energy)
-- Virtual sources: 50
-- Room 2 level: ~23% of Room 1 (-12.7 dB)
+
+core file. all the other ones were old iterations
 
 ## Usage
 ```bash
-python3 Test_with_pyva.py
+python3 Test_roomSep.py
 ```
 
 
